@@ -1,0 +1,292 @@
+---
+title: Tuango - RFM Analysis for Mobile App Push Messaging on the post roll-out data
+output: html_document
+---
+
+```{r r_setup, include = FALSE}
+## initial settings
+knitr::opts_chunk$set(
+  comment = NA,
+  echo = TRUE,
+  error = TRUE,
+  cache = FALSE,
+  message = FALSE,
+  dpi = 96,
+  warning = FALSE
+)
+
+## width to use when printing tables etc.
+options(
+  width = 250,
+  scipen = 100,
+  max.print = 5000,
+  stringsAsFactors = FALSE
+)
+
+## make all required libraries available by loading radiant package if needed
+if (!exists("r_environment")) library(radiant)
+```
+
+```{css, echo = FALSE}
+.table {
+  width: auto;
+}
+ul, ol {
+  padding-left: 18px;
+}
+pre, code, pre code {
+  overflow: auto;
+  white-space: pre;
+  word-wrap: normal;
+  background-color: #ffffff;
+}
+```
+
+#### *Tuango is one of the major “deal-of-the-day” websites in China. The website’s business model is similar to that of Groupon, promoting discounted gift certificates that can be used at local or national retailers. The pronunciation of “Tuango” in Chinese sounds similar to “group buying” which refers to the fact that customers are buying as a big group for each “deal.” Tuango had been experimenting with promotional push message campaigns through mobile apps for several months.*
+
+#### *Our target is to try different RFM approaches to see which approach returns us a better profit margin and return on marketing expenditures compared to sending push messages to all customers.*
+
+```{r}
+## loading the data
+library(readr)
+tuango_wrk <- read_rds("data/tuango_post.rds")
+
+```
+
+```{r}
+## Approach without RFM
+
+library(dplyr)
+
+tuango_test <- tuango_wrk %>% 
+  filter(training == 0) %>%
+  summarize(resp_rate = mean(buyer == "yes"), order_size = sum(ordersize)/sum(buyer == "yes"), count = n())
+
+margin_none <- tuango_test$order_size
+
+resp_avg_none <- tuango_test$resp_rate
+
+test_size_none <- nrow(tuango_test)
+
+profit_none <- (0.5 * margin_none * resp_avg_none * tuango_test$count) - (1.6 * tuango_test$count)
+
+rome_none <- profit_none / (1.6 * tuango_test$count)
+
+result_none <- data.frame(id = "Without RFM", Profit = profit_none, ROME = rome_none)
+```
+
+```{r}
+## Approach 1 - Independent RFM
+
+## Using training data to find the break even rate and identify the cells which would increase overall profit and return on marketing expenditures
+
+tuango_1 <- tuango_wrk %>% filter(training == 1) 
+temp <- tuango_1 %>% filter(buyer == "yes")
+margin <- mean(temp$ordersize)*0.5
+cost <- 1.6
+break_even <- cost/margin
+
+
+tuango_iq <- tuango_1 %>%
+  mutate(recency_iq = xtile(recency,5), frequency_iq = xtile(frequency, 5, rev = TRUE), monetary_iq = xtile(monetary, 5, rev = TRUE)) %>% 
+  mutate(rfm_iq = paste0(recency_iq, frequency_iq, monetary_iq)) %>% 
+  group_by(rfm_iq) %>% 
+  summarize(resp_rate = mean(buyer == "yes"), order_size = sum(ordersize)/sum(buyer == "yes"), count = n())
+
+
+tuango_iq_new <- tuango_iq[tuango_iq$resp_rate>break_even,]$rfm_iq
+
+## Using the profitable cells identified above to predict the returns on the test data
+tuango_test_iq <- tuango_wrk %>% 
+  filter(training == 0) %>%
+  mutate(recency_iq = xtile(recency,5), frequency_iq = xtile(frequency, 5, rev = TRUE), monetary_iq = xtile(monetary, 5, rev = TRUE)) %>% 
+  mutate(rfm_iq = paste0(recency_iq, frequency_iq, monetary_iq)) %>% 
+  group_by(rfm_iq) %>% 
+  summarize(resp_rate = mean(buyer == "yes"), order_size = sum(ordersize)/sum(buyer == "yes"), count = n()) %>% 
+  filter(rfm_iq %in% c(tuango_iq_new))
+
+margin_iq <- sum(tuango_test_iq$order_size * tuango_test_iq$count)/sum(tuango_test_iq$count)
+
+resp_avg_iq <- sum(tuango_test_iq$resp_rate * tuango_test_iq$count)/sum(tuango_test_iq$count)
+
+test_size <- nrow(tuango_wrk) - nrow(tuango_1)
+
+profit_iq <- (0.5 * margin_iq * resp_avg_iq * sum(tuango_test_iq$count)) - (1.6 * sum(tuango_test_iq$count))
+
+rome_iq <- profit_iq / (1.6 * sum(tuango_test_iq$count))
+
+result_iq <- data.frame(id = "RFM Ind", Profit = profit_iq, ROME = rome_iq)
+```
+
+```{r}
+## Approach 2 - Sequential RFM
+
+## Using training data to find the break even rate and identify the cells which would increase overall profit and return on marketing expenditures
+
+tuango_sq <- tuango_1 %>% 
+  mutate(recency_sq = xtile(recency,5)) %>%
+  group_by(recency_sq) %>%
+  mutate(frequency_sq = xtile(frequency,5, rev = TRUE)) %>%
+  group_by(recency_sq, frequency_sq) %>%
+  mutate(monetary_sq = xtile(monetary, 5, rev = TRUE)) %>%
+  mutate(rfm_sq = paste0(recency_sq, frequency_sq, monetary_sq)) %>%
+  group_by(rfm_sq) %>% 
+  summarize(resp_rate = mean(buyer == "yes"), order_size = sum(ordersize)/sum(buyer == "yes"), count = n())
+
+tuango_sq_new <- tuango_sq[tuango_sq$resp_rate>break_even,]$rfm_sq
+
+## Using the profitable cells identified above to predict the returns on the test data
+tuango_test_sq <- tuango_wrk %>% 
+  filter(training == 0) %>%
+  mutate(recency_sq = xtile(recency,5)) %>%
+  group_by(recency_sq) %>%
+  mutate(frequency_sq = xtile(frequency,5, rev = TRUE)) %>%
+  group_by(recency_sq, frequency_sq) %>%
+  mutate(monetary_sq = xtile(monetary, 5, rev = TRUE)) %>%
+  mutate(rfm_sq = paste0(recency_sq, frequency_sq, monetary_sq)) %>%
+  group_by(rfm_sq) %>% 
+  summarize(resp_rate = mean(buyer == "yes"), order_size = sum(ordersize)/sum(buyer == "yes"), count = n()) %>% 
+  filter(rfm_sq %in% c(tuango_sq_new))
+
+margin_sq <- sum(tuango_test_sq$order_size * tuango_test_sq$count)/sum(tuango_test_sq$count)
+
+resp_avg_sq <- sum(tuango_test_sq$resp_rate * tuango_test_sq$count)/sum(tuango_test_sq$count)
+
+profit_sq <- (0.5 * margin_sq * resp_avg_sq * sum(tuango_test_sq$count)) - (1.6 * sum(tuango_test_sq$count))
+
+rome_sq <- profit_sq / (1.6 * sum(tuango_test_sq$count))
+
+result_sq <- data.frame(id = "RFM Seq", Profit = profit_sq, ROME = rome_sq)
+```
+
+```{r}
+## Approach 3 - Sequential RFM using Break even across each cell
+
+## Using training data to find the break even rate and identify the cells which would increase overall profit and return on marketing expenditures
+tuango_sq_break <- tuango_sq %>%
+  mutate(break_even = (1.6)/(0.5*order_size)) %>%
+  mutate(mail_to = resp_rate>break_even) %>%
+  filter(mail_to == TRUE) 
+
+tuango_sq_break_new <- tuango_sq_break[tuango_sq_break$resp_rate>break_even,]$rfm_sq
+
+## Using the profitable cells identified above to predict the returns on the test data
+tuango_test_sq_break <- tuango_wrk %>% 
+  filter(training == 0) %>%
+  mutate(recency_sq = xtile(recency,5)) %>%
+  group_by(recency_sq) %>%
+  mutate(frequency_sq = xtile(frequency,5, rev = TRUE)) %>%
+  group_by(recency_sq, frequency_sq) %>%
+  mutate(monetary_sq = xtile(monetary, 5, rev = TRUE)) %>%
+  mutate(rfm_sq = paste0(recency_sq, frequency_sq, monetary_sq)) %>%
+  group_by(rfm_sq) %>% 
+  summarize(resp_rate = mean(buyer == "yes"), order_size = sum(ordersize)/sum(buyer == "yes"), count = n()) %>% 
+  filter(rfm_sq %in% c(tuango_sq_break_new))
+
+margin_sq_break <- sum(tuango_test_sq_break$order_size * tuango_test_sq_break$count)/sum(tuango_test_sq_break$count)
+
+resp_avg_sq_break <- sum(tuango_test_sq_break$resp_rate * tuango_test_sq_break$count)/sum(tuango_test_sq_break$count)
+
+profit_sq_break <- (0.5 * margin_sq_break * resp_avg_sq_break * sum(tuango_test_sq_break$count)) - (1.6 * sum(tuango_test_sq_break$count))
+
+rome_sq_break <- profit_sq_break / (1.6 * sum(tuango_test_sq_break$count))
+
+result_sq_break <- data.frame(id = "RFM Sqe Break_even", Profit = profit_sq_break, ROME = rome_sq_break)
+```
+
+```{r}
+## Appraoch 4 - Independent RFM using lower bound
+
+## Using training data to find the break even rate and identify the cells which would increase overall profit and return on marketing expenditures
+tuango_iq_lb <- tuango_1 %>%
+  mutate(recency_iq = xtile(recency,5), frequency_iq = xtile(frequency, 5, rev = TRUE), monetary_iq = xtile(monetary, 5, rev = TRUE)) %>% 
+  mutate(rfm_iq = paste0(recency_iq, frequency_iq, monetary_iq)) %>% 
+  group_by(rfm_iq) %>% 
+  mutate(mailto_iq = (mean(buyer == "yes") - 1.64*seprop(buyer == "yes"))>break_even) %>%
+  filter(mailto_iq == TRUE) %>%
+  summarize(resp_rate = mean(buyer == "yes"), order_size = sum(ordersize)/sum(buyer == "yes"), count = n())
+
+tuango_iq_lb_new <- tuango_iq_lb[tuango_iq_lb$resp_rate>break_even,]$rfm_iq
+
+## Using the profitable cells identified above to predict the returns on the test data
+tuango_test_iq_lb <- tuango_wrk %>% 
+  filter(training == 0) %>%
+  mutate(recency_iq = xtile(recency,5), frequency_iq = xtile(frequency, 5, rev = TRUE), monetary_iq = xtile(monetary, 5, rev = TRUE)) %>% 
+  mutate(rfm_iq = paste0(recency_iq, frequency_iq, monetary_iq)) %>% 
+  group_by(rfm_iq) %>% 
+  summarize(resp_rate = mean(buyer == "yes"), order_size = sum(ordersize)/sum(buyer == "yes"), count = n()) %>% 
+  filter(rfm_iq %in% c(tuango_iq_lb_new))
+
+margin_iq_lb <- sum(tuango_test_iq_lb$order_size * tuango_test_iq_lb$count)/sum(tuango_test_iq_lb$count)
+
+resp_avg_iq_lb <- sum(tuango_test_iq_lb$resp_rate * tuango_test_iq_lb$count)/sum(tuango_test_iq_lb$count)
+
+profit_iq_lb <- (0.5 * margin_iq_lb * resp_avg_iq_lb * sum(tuango_test_iq_lb$count)) - (1.6 * sum(tuango_test_iq_lb$count))
+
+rome_iq_lb <- profit_iq_lb / (1.6 * sum(tuango_test_iq_lb$count))
+
+result_iq_lb <- data.frame(id = "RFM Ind lb", Profit = profit_iq_lb, ROME = rome_iq_lb)
+```
+
+```{r}
+## Approach 5 - Sequential RFM using lower bound
+
+## Using training data to find the break even rate and identify the cells which would increase overall profit and return on marketing expenditures
+tuango_sq_lb <- tuango_1 %>%
+  mutate(recency_sq = xtile(recency,5)) %>%
+  group_by(recency_sq) %>%
+  mutate(frequency_sq = xtile(frequency,5, rev = TRUE)) %>%
+  group_by(recency_sq, frequency_sq) %>%
+  mutate(monetary_sq = xtile(monetary, 5, rev = TRUE)) %>%
+  mutate(rfm_sq = paste0(recency_sq, frequency_sq, monetary_sq)) %>%
+  group_by(rfm_sq) %>%
+  mutate(mailto_iq = (mean(buyer == "yes") - 1.64*seprop(buyer == "yes"))>break_even) %>%
+  filter(mailto_iq == TRUE) %>%
+  summarize(resp_rate = mean(buyer == "yes"), order_size = sum(ordersize)/sum(buyer == "yes"), count = n())
+
+tuango_sq_lb_new <- tuango_sq_lb[tuango_sq_lb$resp_rate>break_even,]$rfm_sq
+
+## Using the profitable cells identified above to predict the returns on the test data
+tuango_test_sq_lb <- tuango_wrk %>% 
+  filter(training == 0) %>%
+  mutate(recency_sq = xtile(recency,5)) %>%
+  group_by(recency_sq) %>%
+  mutate(frequency_sq = xtile(frequency,5, rev = TRUE)) %>%
+  group_by(recency_sq, frequency_sq) %>%
+  mutate(monetary_sq = xtile(monetary, 5, rev = TRUE)) %>%
+  mutate(rfm_sq = paste0(recency_sq, frequency_sq, monetary_sq)) %>%
+  group_by(rfm_sq) %>%
+  summarize(resp_rate = mean(buyer == "yes"), order_size = sum(ordersize)/sum(buyer == "yes"), count = n()) %>% 
+  filter(rfm_sq %in% c(tuango_sq_lb_new))
+
+margin_sq_lb <- sum(tuango_test_sq_lb$order_size * tuango_test_sq_lb$count)/sum(tuango_test_sq_lb$count)
+
+resp_avg_sq_lb <- sum(tuango_test_sq_lb$resp_rate * tuango_test_sq_lb$count)/sum(tuango_test_sq_lb$count)
+
+profit_sq_lb <- (0.5 * margin_sq_lb * resp_avg_sq_lb * sum(tuango_test_sq_lb$count)) - (1.6 * sum(tuango_test_sq_lb$count))
+
+rome_sq_lb <- profit_sq_lb / (1.6 * sum(tuango_test_sq_lb$count))
+
+result_sq_lb <- data.frame(id = "RFM Seq lb", Profit = profit_sq_lb, ROME = rome_sq_lb)
+```
+
+#### We can see that when we didnt use RFM and sent out push messages to all users, we made less profit relatively to other approaches even though getting 87.26% return on marketing expenditures is not a small margin.
+
+#### We can clearly point out that Sequential RFM performs better on this data in both the case(i.e. using lower bound and without lower bound). It can be because sequential gives us a better uniform distribution in all cells compared to independent RFM. One advantage of independent RFM is that it is very easy to interpret and gives a closer range of profits and rome.
+
+#### When we used lower bound values, we went with a more conservative approach and hence we were getting better ROMEs and the profits declined by 15-16% roughly because we are leaving out few potential customers who could add in more bucks. So depending on need, we can choose one of these approaches accordingly.
+
+```{r}
+results <- rbind(result_none, result_iq, result_sq, result_sq_break, result_iq_lb, result_sq_lb)
+
+results
+```
+
+```{r}
+ggplot(results, aes(x = id, y = Profit, fill = id)) +
+  geom_bar(stat = "identity")
+
+ggplot(results, aes(x = id, y = ROME, fill = id)) +
+  geom_bar(stat = "identity")
+
+```
